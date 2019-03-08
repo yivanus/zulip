@@ -10,6 +10,8 @@ import urllib
 from typing import Any, Dict
 
 from zerver.lib.actions import do_create_user
+from zerver.lib.actions import do_change_logo_source
+from zerver.lib.events import add_realm_logo_fields
 from zerver.lib.test_classes import ZulipTestCase
 from zerver.lib.test_helpers import (
     HostRequestMock, queries_captured, get_user_messages
@@ -20,7 +22,7 @@ from zerver.models import (
     get_realm, get_stream, get_user, UserProfile,
     flush_per_request_caches, DefaultStream, Realm,
 )
-from zerver.views.home import home, sent_time_in_epoch_seconds
+from zerver.views.home import home, sent_time_in_epoch_seconds, compute_navbar_logo_url
 from corporate.models import Customer, CustomerPlan
 
 class HomeTest(ZulipTestCase):
@@ -162,10 +164,12 @@ class HomeTest(ZulipTestCase):
             "realm_non_active_users",
             "realm_notifications_stream_id",
             "realm_password_auth_enabled",
+            "realm_plan_type",
             "realm_presence_disabled",
             "realm_push_notifications_enabled",
             "realm_send_welcome_emails",
             "realm_signup_notifications_stream_id",
+            "realm_upload_quota",
             "realm_uri",
             "realm_user_groups",
             "realm_users",
@@ -721,6 +725,54 @@ class HomeTest(ZulipTestCase):
         self.assertEqual(result.status_code, 200)
         html = result.content.decode('utf-8')
         self.assertIn('Apps for every platform.', html)
+
+    def test_compute_navbar_logo_url(self) -> None:
+        user_profile = self.example_user("hamlet")
+
+        page_params = {"night_mode": True}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/static/images/logo/zulip-org-logo.png?version=0")
+
+        page_params = {"night_mode": False}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/static/images/logo/zulip-org-logo.png?version=0")
+
+        do_change_logo_source(user_profile.realm, Realm.LOGO_UPLOADED, night=False)
+        page_params = {"night_mode": True}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/user_avatars/1/realm/logo.png?version=2")
+
+        page_params = {"night_mode": False}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/user_avatars/1/realm/logo.png?version=2")
+
+        do_change_logo_source(user_profile.realm, Realm.LOGO_UPLOADED, night=True)
+        page_params = {"night_mode": True}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/user_avatars/1/realm/night_logo.png?version=2")
+
+        page_params = {"night_mode": False}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/user_avatars/1/realm/logo.png?version=2")
+
+        # This configuration isn't super supported in the UI and is a
+        # weird choice, but we have a test for it anyway.
+        do_change_logo_source(user_profile.realm, Realm.LOGO_DEFAULT, night=False)
+        page_params = {"night_mode": True}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/user_avatars/1/realm/night_logo.png?version=2")
+
+        page_params = {"night_mode": False}
+        add_realm_logo_fields(page_params, user_profile.realm)
+        self.assertEqual(compute_navbar_logo_url(page_params),
+                         "/static/images/logo/zulip-org-logo.png?version=0")
 
     def test_generate_204(self) -> None:
         email = self.example_email("hamlet")

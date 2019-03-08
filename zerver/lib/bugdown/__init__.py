@@ -10,7 +10,6 @@ import logging
 import traceback
 import urllib
 import re
-import regex
 import os
 import html
 import time
@@ -18,6 +17,7 @@ import functools
 import ujson
 import xml.etree.cElementTree as etree
 from xml.etree.cElementTree import Element
+import ahocorasick
 
 from collections import deque, defaultdict
 
@@ -195,9 +195,13 @@ def rewrite_local_links_to_relative(db_data: Optional[DbData], link: str) -> str
 
     return link
 
-def url_embed_preview_enabled_for_realm(message: Optional[Message]=None,
-                                        realm: Optional[Realm]=None) -> bool:
+def url_embed_preview_enabled(message: Optional[Message]=None,
+                              realm: Optional[Realm]=None,
+                              no_previews: Optional[bool]=False) -> bool:
     if not settings.INLINE_URL_EMBED_PREVIEW:
+        return False
+
+    if no_previews:
         return False
 
     if realm is None:
@@ -212,9 +216,13 @@ def url_embed_preview_enabled_for_realm(message: Optional[Message]=None,
 
     return realm.inline_url_embed_preview
 
-def image_preview_enabled_for_realm(message: Optional[Message]=None,
-                                    realm: Optional[Realm]=None) -> bool:
+def image_preview_enabled(message: Optional[Message]=None,
+                          realm: Optional[Realm]=None,
+                          no_previews: Optional[bool]=False) -> bool:
     if not settings.INLINE_IMAGE_PREVIEW:
+        return False
+
+    if no_previews:
         return False
 
     if realm is None:
@@ -589,14 +597,8 @@ class InlineInterestingLinkProcessor(markdown.treeprocessors.Treeprocessor):
 
         return url
 
-    def image_preview_enabled(self) -> bool:
-        return image_preview_enabled_for_realm(
-            self.markdown.zulip_message,
-            self.markdown.zulip_realm,
-        )
-
     def is_image(self, url: str) -> bool:
-        if not self.image_preview_enabled():
+        if not self.markdown.image_preview_enabled:
             return False
         parsed_url = urllib.parse.urlparse(url)
         # List from http://support.google.com/chromeos/bin/answer.py?hl=en&answer=183093
@@ -651,7 +653,7 @@ class InlineInterestingLinkProcessor(markdown.treeprocessors.Treeprocessor):
         return None
 
     def youtube_id(self, url: str) -> Optional[str]:
-        if not self.image_preview_enabled():
+        if not self.markdown.image_preview_enabled:
             return None
         # Youtube video id extraction regular expression from http://pastebin.com/KyKAFv1s
         # If it matches, match.group(2) is the video id.
@@ -671,7 +673,7 @@ class InlineInterestingLinkProcessor(markdown.treeprocessors.Treeprocessor):
         return None
 
     def vimeo_id(self, url: str) -> Optional[str]:
-        if not self.image_preview_enabled():
+        if not self.markdown.image_preview_enabled:
             return None
         #(http|https)?:\/\/(www\.)?vimeo.com\/(?:channels\/(?:\w+\/)?|groups\/([^\/]*)\/videos\/|)(\d+)(?:|\/\?)
         # If it matches, match.group('id') is the video id.
@@ -1004,8 +1006,7 @@ class InlineInterestingLinkProcessor(markdown.treeprocessors.Treeprocessor):
             if db_data and db_data['sent_by_bot']:
                 continue
 
-            if not url_embed_preview_enabled_for_realm(self.markdown.zulip_message,
-                                                       self.markdown.zulip_realm):
+            if not self.markdown.url_embed_preview_enabled:
                 continue
 
             try:
@@ -1177,7 +1178,7 @@ class Emoji(markdown.inlinepatterns.Pattern):
         elif name in name_to_codepoint:
             return make_emoji(name_to_codepoint[name], orig_syntax)
         else:
-            return None
+            return orig_syntax
 
 def content_has_emoji_syntax(content: str) -> bool:
     return re.search(EMOJI_REGEX, content) is not None
@@ -1414,14 +1415,30 @@ class AutoNumberOListPreprocessor(markdown.preprocessors.Preprocessor):
             is_next_item = (m and current_list
                             and current_indent == len(m.group(1)) // self.TAB_LENGTH)
 
-            if not is_next_item:
-                # There is no more items in the list we were processing
+            is_blank_line = line.strip() == ""
+
+            if not is_next_item and not is_blank_line:
+                # This is a non-blank line that doesn't start with a
+                # bullet, so we're done with the previous numbered
+                # list and can start a new one.
                 new_lines.extend(self.renumber(current_list))
                 current_list = []
 
             if not m:
-                # Ordinary line
-                new_lines.append(line)
+                # This line doesn't start with a bullet.  If it's not
+                # between bullets of a list (i.e. `current_list =
+                # []`), this is just normal content outside a bulleted
+                # list and we can append it to `new_lines`.
+                if not current_list:
+                    # Ordinary line
+                    new_lines.append(line)
+
+                # Otherwise, it's a blank line in between bullets,
+                # because if this was a bullet, `m` would be truthy,
+                # and if it wasn't blank, we could have terminated the
+                # list (see above).  We can just skip this blank line
+                # syntax, as our bulleted list CSS styling will
+                # control vertical spacing between bullets.
             elif is_next_item:
                 # Another list item
                 current_list.append(m)
@@ -1484,14 +1501,14 @@ def get_link_re() -> str:
     return normal_compile(LINK_RE)
 
 def prepare_realm_pattern(source: str) -> str:
-    """ Augment a realm filter to liberally match all occurences of the filter,
-    along with the preceeding and proceeding characters for further analysis in
-    the realm filter pattern and saves what was matched as "name". """
-    return r"""(?P<total>.?(?P<wrap>(?P<name>""" + source + r')).?)'
+    """ Augment a realm filter so it only matches after start-of-string,
+    whitespace, or opening delimiters, won't match if there are word
+    characters directly after, and saves what was matched as "name". """
+    return r"""(?<![^\s'"\(,:<])(?P<name>""" + source + r')(?!\w)'
 
 # Given a regular expression pattern, linkifies groups that match it
 # using the provided format string to construct the URL.
-class RealmFilterPattern(markdown.inlinepatterns.InlineProcessor):
+class RealmFilterPattern(markdown.inlinepatterns.Pattern):
     """ Applied a given realm filter to the input """
 
     def __init__(self, source_pattern: str,
@@ -1499,40 +1516,13 @@ class RealmFilterPattern(markdown.inlinepatterns.InlineProcessor):
                  markdown_instance: Optional[markdown.Markdown]=None) -> None:
         self.pattern = prepare_realm_pattern(source_pattern)
         self.format_string = format_string
-        # To properly convert realm patterns in languages that do not use spaces
-        # as separators, we have to apply a somewhat convulated approach. The third
-        # party module `regex` has better unicode support than `re`. Also, we need
-        # to keep two regular expressions because of how word boundaries are computed.
-        #
-        # For example, consider the message:                'hello#123world'
-        # For pattern '#123', computed word boundaries are: 'hello{\b}#123world'
-        # and our pattern's beginning matches even when it
-        # shouldn't. A simple hack is to convert the pattern
-        # to 'a#123a' ('a' is a valid 'word' character).
-        # Now, we get no word boundaries as follows:        'helloa#123world'
-        # and we can safely reject this message.
-        # Conversely, in languages like Japanese that do
-        # not use spaces, a similar message would become:   'チケットは{\b}a#123a{\b}です'
-        # and we can convert this message.
+        markdown.inlinepatterns.Pattern.__init__(self, self.pattern, markdown_instance)
 
-        # Regex: - (should have nothing but listed symbols before)
-        #        - (should have word boundary on left with 'a')
-        #        - (should have word boundary on right with the second 'a')
-        word_boundary_pattern = r"""(?<![^\w\s'"\(,:<])(\b)a{}a(\b)""".format(source_pattern)
-        flags = regex.WORD | regex.DOTALL | regex.UNICODE
-        self.word_boundary_pattern = regex.compile(word_boundary_pattern, flags=flags)
-        super().__init__(self.pattern, markdown_instance)
-
-    def handleMatch(self, m: Match[str], data: str) -> Tuple[Union[Element, str, None],
-                                                             Union[int, None],
-                                                             Union[int, None]]:
-        string_new = m.group('total').replace(m.group('wrap'), 'a' + m.group('wrap') + 'a')
-        if not self.word_boundary_pattern.search(string_new):
-            return None, None, None
+    def handleMatch(self, m: Match[str]) -> Union[Element, str]:
         db_data = self.markdown.zulip_db_data
         return url_to_a(db_data,
                         self.format_string % m.groupdict(),
-                        m.group("name")), m.start('name'), m.end('name')
+                        m.group("name"))
 
 class UserMentionPattern(markdown.inlinepatterns.Pattern):
     def handleMatch(self, m: Match[str]) -> Optional[Element]:
@@ -1635,6 +1625,21 @@ def possible_linked_stream_names(content: str) -> Set[str]:
     return set(matches)
 
 class AlertWordsNotificationProcessor(markdown.preprocessors.Preprocessor):
+
+    allowed_before_punctuation = set([' ', '\n', '(', '"', '.', ',', '\'', ';', '[', '*', '`', '>'])
+    allowed_after_punctuation = set([' ', '\n', ')', '",', '?', ':', '.', ',', '\'', ';', ']', '!',
+                                     '*', '`'])
+
+    def check_valid_start_position(self, content: str, index: int) -> bool:
+        if index <= 0 or content[index] in self.allowed_before_punctuation:
+            return True
+        return False
+
+    def check_valid_end_position(self, content: str, index: int) -> bool:
+        if index >= len(content) or content[index] in self.allowed_after_punctuation:
+            return True
+        return False
+
     def run(self, lines: Iterable[str]) -> Iterable[str]:
         db_data = self.markdown.zulip_db_data
         if self.markdown.zulip_message and db_data is not None:
@@ -1645,22 +1650,14 @@ class AlertWordsNotificationProcessor(markdown.preprocessors.Preprocessor):
             # don't do any special rendering; we just append the alert words
             # we find to the set self.markdown.zulip_message.alert_words.
 
-            realm_words = db_data['possible_words']
+            realm_alert_words_automaton = db_data['realm_alert_words_automaton']
 
-            content = '\n'.join(lines).lower()
-
-            allowed_before_punctuation = "|".join([r'\s', '^', r'[\(\".,\';\[\*`>]'])
-            allowed_after_punctuation = "|".join([r'\s', '$', r'[\)\"\?:.,\';\]!\*`]'])
-
-            for word in realm_words:
-                escaped = re.escape(word.lower())
-                match_re = re.compile('(?:%s)%s(?:%s)' %
-                                      (allowed_before_punctuation,
-                                       escaped,
-                                       allowed_after_punctuation))
-                if re.search(match_re, content):
-                    self.markdown.zulip_message.alert_words.add(word)
-
+            if realm_alert_words_automaton is not None:
+                content = '\n'.join(lines).lower()
+                for end_index, (original_value, user_ids) in realm_alert_words_automaton.iter(content):
+                    if self.check_valid_start_position(content, end_index - len(original_value)) and \
+                       self.check_valid_end_position(content, end_index + 1):
+                        self.markdown.zulip_message.user_ids_with_alert_words.update(user_ids)
         return lines
 
 # This prevents realm_filters from running on the content of a
@@ -2117,13 +2114,14 @@ def get_stream_name_info(realm: Realm, stream_names: Set[str]) -> Dict[str, Full
 
 
 def do_convert(content: str,
+               realm_alert_words_automaton: Optional[ahocorasick.Automaton] = None,
                message: Optional[Message]=None,
                message_realm: Optional[Realm]=None,
-               possible_words: Optional[Set[str]]=None,
                sent_by_bot: Optional[bool]=False,
                translate_emoticons: Optional[bool]=False,
                mention_data: Optional[MentionData]=None,
-               email_gateway: Optional[bool]=False) -> str:
+               email_gateway: Optional[bool]=False,
+               no_previews: Optional[bool]=False) -> str:
     """Convert Markdown to HTML, with Zulip-specific settings and hacks."""
     # This logic is a bit convoluted, but the overall goal is to support a range of use cases:
     # * Nothing is passed in other than content -> just run default options (e.g. for docs)
@@ -2166,12 +2164,14 @@ def do_convert(content: str,
     _md_engine.zulip_message = message
     _md_engine.zulip_realm = message_realm
     _md_engine.zulip_db_data = None  # for now
+    _md_engine.image_preview_enabled = image_preview_enabled(
+        message, message_realm, no_previews)
+    _md_engine.url_embed_preview_enabled = url_embed_preview_enabled(
+        message, message_realm, no_previews)
 
     # Pre-fetch data from the DB that is used in the bugdown thread
     if message is not None:
         assert message_realm is not None  # ensured above if message is not None
-        if possible_words is None:
-            possible_words = set()  # Set[str]
 
         # Here we fetch the data structures needed to render
         # mentions/avatars/stream mentions from the database, but only
@@ -2194,7 +2194,7 @@ def do_convert(content: str,
             active_realm_emoji = dict()
 
         _md_engine.zulip_db_data = {
-            'possible_words': possible_words,
+            'realm_alert_words_automaton': realm_alert_words_automaton,
             'email_info': email_info,
             'mention_data': mention_data,
             'active_realm_emoji': active_realm_emoji,
@@ -2259,16 +2259,18 @@ def bugdown_stats_finish() -> None:
     bugdown_total_time += (time.time() - bugdown_time_start)
 
 def convert(content: str,
+            realm_alert_words_automaton: Optional[ahocorasick.Automaton] = None,
             message: Optional[Message]=None,
             message_realm: Optional[Realm]=None,
-            possible_words: Optional[Set[str]]=None,
             sent_by_bot: Optional[bool]=False,
             translate_emoticons: Optional[bool]=False,
             mention_data: Optional[MentionData]=None,
-            email_gateway: Optional[bool]=False) -> str:
+            email_gateway: Optional[bool]=False,
+            no_previews: Optional[bool]=False) -> str:
     bugdown_stats_start()
-    ret = do_convert(content, message, message_realm,
-                     possible_words, sent_by_bot, translate_emoticons,
-                     mention_data, email_gateway)
+    ret = do_convert(content, realm_alert_words_automaton,
+                     message, message_realm, sent_by_bot,
+                     translate_emoticons, mention_data, email_gateway,
+                     no_previews=no_previews)
     bugdown_stats_finish()
     return ret

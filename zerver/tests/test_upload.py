@@ -23,8 +23,7 @@ from zerver.lib.upload import sanitize_name, S3UploadBackend, \
     upload_message_file, upload_emoji_image, delete_message_image, LocalUploadBackend, \
     ZulipUploadBackend, MEDIUM_AVATAR_SIZE, resize_avatar, \
     resize_emoji, BadImageError, get_realm_for_filename, \
-    currently_used_upload_space, DEFAULT_AVATAR_SIZE, DEFAULT_EMOJI_SIZE, \
-    exif_rotate
+    DEFAULT_AVATAR_SIZE, DEFAULT_EMOJI_SIZE, exif_rotate
 import zerver.lib.upload
 from zerver.models import Attachment, get_user, \
     Message, UserProfile, Realm, \
@@ -32,9 +31,12 @@ from zerver.models import Attachment, get_user, \
     validate_attachment_request
 from zerver.lib.actions import (
     do_change_plan_type,
+    do_change_icon_source,
+    do_change_logo_source,
     do_delete_old_unclaimed_attachments,
     internal_send_private_message,
 )
+from zerver.lib.cache import get_realm_used_upload_space_cache_key, cache_get
 from zerver.lib.create_user import copy_user_settings
 from zerver.lib.users import get_api_key
 from zerver.views.upload import upload_file_backend
@@ -1160,8 +1162,7 @@ class RealmIconTest(UploadSerializeMixin, ZulipTestCase):
     def test_get_gravatar_icon(self) -> None:
         self.login(self.example_email("hamlet"))
         realm = get_realm('zulip')
-        realm.icon_source = Realm.ICON_FROM_GRAVATAR
-        realm.save()
+        do_change_icon_source(realm, Realm.ICON_FROM_GRAVATAR)
         with self.settings(ENABLE_GRAVATAR=True):
             response = self.client_get("/json/realm/icon?foo=bar")
             redirect_url = response['Location']
@@ -1176,8 +1177,7 @@ class RealmIconTest(UploadSerializeMixin, ZulipTestCase):
         self.login(self.example_email("hamlet"))
 
         realm = get_realm('zulip')
-        realm.icon_source = Realm.ICON_UPLOADED
-        realm.save()
+        do_change_icon_source(realm, Realm.ICON_UPLOADED)
         response = self.client_get("/json/realm/icon?foo=bar")
         redirect_url = response['Location']
         self.assertTrue(redirect_url.endswith(realm_icon_url(realm) + '&foo=bar'))
@@ -1223,8 +1223,7 @@ class RealmIconTest(UploadSerializeMixin, ZulipTestCase):
         """
         self.login(self.example_email("iago"))
         realm = get_realm('zulip')
-        realm.icon_source = Realm.ICON_UPLOADED
-        realm.save()
+        do_change_icon_source(realm, Realm.ICON_UPLOADED)
 
         result = self.client_delete("/json/realm/icon")
 
@@ -1304,9 +1303,7 @@ class RealmLogoTest(UploadSerializeMixin, ZulipTestCase):
     def test_get_default_logo(self) -> None:
         self.login(self.example_email("hamlet"))
         realm = get_realm('zulip')
-        realm.logo_source = Realm.LOGO_DEFAULT
-        realm.night_logo_source = Realm.LOGO_DEFAULT
-        realm.save()
+        do_change_logo_source(realm, Realm.LOGO_UPLOADED, self.night)
         response = self.client_get("/json/realm/logo", {'night': ujson.dumps(self.night)})
         redirect_url = response['Location']
         self.assertEqual(redirect_url, realm_logo_url(realm, self.night) +
@@ -1315,9 +1312,7 @@ class RealmLogoTest(UploadSerializeMixin, ZulipTestCase):
     def test_get_realm_logo(self) -> None:
         self.login(self.example_email("hamlet"))
         realm = get_realm('zulip')
-        realm.logo_source = Realm.LOGO_UPLOADED
-        realm.night_logo_source = Realm.LOGO_UPLOADED
-        realm.save()
+        do_change_logo_source(realm, Realm.LOGO_UPLOADED, self.night)
         response = self.client_get("/json/realm/logo", {'night': ujson.dumps(self.night)})
         redirect_url = response['Location']
         self.assertTrue(redirect_url.endswith(realm_logo_url(realm, self.night) +
@@ -1328,12 +1323,6 @@ class RealmLogoTest(UploadSerializeMixin, ZulipTestCase):
         A PUT request to /json/realm/logo with a valid file should return a url
         and actually create an realm logo.
         """
-        if self.night:
-            field_name = 'night_logo_url'
-            file_name = 'night_logo.png'
-        else:
-            field_name = 'logo_url'
-            file_name = 'logo.png'
         for fname, rfname in self.correct_files:
             # TODO: use self.subTest once we're exclusively on python 3 by uncommenting the line below.
             # with self.subTest(fname=fname):
@@ -1342,13 +1331,10 @@ class RealmLogoTest(UploadSerializeMixin, ZulipTestCase):
                 result = self.client_post("/json/realm/logo", {'file': fp, 'night': ujson.dumps(self.night)})
             realm = get_realm('zulip')
             self.assert_json_success(result)
-            self.assertIn(field_name, result.json())
-            base = '/user_avatars/%s/realm/%s' % (realm.id, file_name)
-            url = result.json()[field_name]
-            self.assertEqual(base, url[:len(base)])
+            logo_url = realm_logo_url(realm, self.night)
 
             if rfname is not None:
-                response = self.client_get(url)
+                response = self.client_get(logo_url)
                 data = b"".join(response.streaming_content)
                 # size should be 100 x 100 because thumbnail keeps aspect ratio
                 # while trying to fit in a 800 x 100 box without losing part of the image
@@ -1370,21 +1356,13 @@ class RealmLogoTest(UploadSerializeMixin, ZulipTestCase):
         """
         A DELETE request to /json/realm/logo should delete the realm logo and return gravatar URL
         """
-        if self.night:
-            field_name = 'night_logo_url'
-        else:
-            field_name = 'logo_url'
 
         self.login(self.example_email("iago"))
         realm = get_realm('zulip')
-        realm.logo_source = Realm.LOGO_UPLOADED
-        realm.night_logo_source = Realm.LOGO_UPLOADED
-        realm.save()
+        do_change_logo_source(realm, Realm.LOGO_UPLOADED, self.night)
         result = self.client_delete("/json/realm/logo", {'night': ujson.dumps(self.night)})
         self.assert_json_success(result)
-        self.assertIn(field_name, result.json())
         realm = get_realm('zulip')
-        self.assertEqual(result.json()[field_name], realm_logo_url(realm, self.night))
         if self.night:
             self.assertEqual(realm.night_logo_source, Realm.LOGO_DEFAULT)
         else:
@@ -1703,9 +1681,7 @@ class S3Test(ZulipTestCase):
         zerver.lib.upload.upload_backend.upload_realm_logo_image(image_file, user_profile, night)
 
         original_path_id = os.path.join(str(user_profile.realm.id), "realm", "%s.original" % (file_name))
-        print(original_path_id)
         original_key = bucket.get_key(original_path_id)
-        print(original_key)
         image_file.seek(0)
         self.assertEqual(image_file.read(), original_key.get_contents_as_string())
 
@@ -1780,15 +1756,42 @@ class UploadSpaceTests(UploadSerializeMixin, ZulipTestCase):
         self.user_profile = self.example_user('hamlet')
 
     def test_currently_used_upload_space(self) -> None:
-        self.assertEqual(0, currently_used_upload_space(self.realm))
+        self.assertEqual(None, cache_get(get_realm_used_upload_space_cache_key(self.realm)))
+        self.assertEqual(0, self.realm.currently_used_upload_space_bytes())
+        self.assertEqual(0, cache_get(get_realm_used_upload_space_cache_key(self.realm))[0])
 
         data = b'zulip!'
         upload_message_file(u'dummy.txt', len(data), u'text/plain', data, self.user_profile)
-        self.assertEqual(len(data), currently_used_upload_space(self.realm))
+        self.assertEqual(None, cache_get(get_realm_used_upload_space_cache_key(self.realm)))
+        self.assertEqual(len(data), self.realm.currently_used_upload_space_bytes())
+        self.assertEqual(len(data), cache_get(get_realm_used_upload_space_cache_key(self.realm))[0])
 
         data2 = b'more-data!'
         upload_message_file(u'dummy2.txt', len(data2), u'text/plain', data2, self.user_profile)
-        self.assertEqual(len(data) + len(data2), currently_used_upload_space(self.realm))
+        self.assertEqual(None, cache_get(get_realm_used_upload_space_cache_key(self.realm)))
+        self.assertEqual(len(data) + len(data2), self.realm.currently_used_upload_space_bytes())
+        self.assertEqual(len(data) + len(data2), cache_get(get_realm_used_upload_space_cache_key(self.realm))[0])
+
+        attachment = Attachment.objects.get(file_name="dummy.txt")
+        attachment.file_name = "dummy1.txt"
+        attachment.save(update_fields=["file_name"])
+        self.assertEqual(len(data) + len(data2), cache_get(get_realm_used_upload_space_cache_key(self.realm))[0])
+        self.assertEqual(len(data) + len(data2), self.realm.currently_used_upload_space_bytes())
+
+        attachment.delete()
+        self.assertEqual(None, cache_get(get_realm_used_upload_space_cache_key(self.realm)))
+        self.assertEqual(len(data2), self.realm.currently_used_upload_space_bytes())
+        self.assertEqual(len(data2), cache_get(get_realm_used_upload_space_cache_key(self.realm))[0])
+
+    def test_upload_space_used_api(self) -> None:
+        self.login(self.user_profile.email)
+        response = self.client_get("/json/realm/upload_space_used")
+        self.assert_in_success_response(["0"], response)
+
+        data = b'zulip!'
+        upload_message_file(u'dummy.txt', len(data), u'text/plain', data, self.user_profile)
+        response = self.client_get("/json/realm/upload_space_used")
+        self.assert_in_success_response([str(len(data))], response)
 
 class ExifRotateTests(TestCase):
     def test_image_do_not_rotate(self) -> None:

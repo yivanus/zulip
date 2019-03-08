@@ -13,7 +13,7 @@ from django.utils.timezone import now as timezone_now
 from io import StringIO
 
 from zerver.models import (
-    get_client, get_realm, get_stream_recipient, get_stream,
+    get_client, get_stream_recipient, get_stream,
     Message, RealmDomain, Recipient, UserMessage, UserPresence, UserProfile,
     Realm, Subscription, Stream, flush_per_request_caches, UserGroup, Service,
     Attachment, PreregistrationUser, get_user_by_delivery_email, MultiuseInvite
@@ -43,7 +43,9 @@ from zerver.lib.actions import (
     do_change_default_stream_group_name,
     do_change_full_name,
     do_change_icon_source,
+    do_change_logo_source,
     do_change_is_admin,
+    do_change_is_guest,
     do_change_notification_settings,
     do_change_realm_domain,
     do_change_stream_description,
@@ -479,6 +481,9 @@ class EventsRegisterTest(ZulipTestCase):
         Make sure we have a clean slate of client descriptors for these tests.
         If we don't do this, then certain failures will only manifest when you
         run multiple tests within a single test function.
+
+        See also https://zulip.readthedocs.io/en/latest/subsystems/events-system.html#testing
+        for details on the design of this test system.
         '''
         clear_client_event_queues_for_testing()
 
@@ -1128,8 +1133,8 @@ class EventsRegisterTest(ZulipTestCase):
             ])),
         ])
 
-        realm = get_realm("zulip")
-        field_id = realm.customprofilefield_set.get(realm=realm, name='Biography').id
+        field_id = self.user_profile.realm.customprofilefield_set.get(
+            realm=self.user_profile.realm, name='Biography').id
         field = {
             "id": field_id,
             "value": "New value",
@@ -1139,7 +1144,8 @@ class EventsRegisterTest(ZulipTestCase):
         self.assert_on_error(error)
 
         # Test we pass correct stringify value in custom-user-field data event
-        field_id = realm.customprofilefield_set.get(realm=realm, name='Mentor').id
+        field_id = self.user_profile.realm.customprofilefield_set.get(
+            realm=self.user_profile.realm, name='Mentor').id
         field = {
             "id": field_id,
             "value": [self.example_user("ZOE").id],
@@ -1301,8 +1307,8 @@ class EventsRegisterTest(ZulipTestCase):
             ])),
         ])
         othello = self.example_user('othello')
-        zulip = get_realm('zulip')
-        events = self.do_test(lambda: check_add_user_group(zulip, 'backend', [othello],
+        events = self.do_test(lambda: check_add_user_group(self.user_profile.realm,
+                                                           'backend', [othello],
                                                            'Backend team'))
         error = user_group_add_checker('events[0]', events[0])
         self.assert_on_error(error)
@@ -1422,6 +1428,21 @@ class EventsRegisterTest(ZulipTestCase):
         error = default_stream_groups_checker('events[0]', events[0])
         self.assert_on_error(error)
 
+    def test_default_stream_group_events_guest(self) -> None:
+        streams = []
+        for stream_name in ["Scotland", "Verona", "Denmark"]:
+            streams.append(get_stream(stream_name, self.user_profile.realm))
+
+        do_create_default_stream_group(self.user_profile.realm, "group1",
+                                       "This is group1", streams)
+        group = lookup_default_stream_groups(["group1"], self.user_profile.realm)[0]
+
+        do_change_is_guest(self.user_profile, True)
+        venice_stream = get_stream("Venice", self.user_profile.realm)
+        self.do_test(lambda: do_add_streams_to_default_stream_group(self.user_profile.realm,
+                                                                    group, [venice_stream]),
+                     state_change_expected = False, num_events=0)
+
     def test_default_streams_events(self) -> None:
         default_streams_checker = self.check_events_dict([
             ('type', equals('default_streams')),
@@ -1439,6 +1460,14 @@ class EventsRegisterTest(ZulipTestCase):
         events = self.do_test(lambda: do_remove_default_stream(stream))
         error = default_streams_checker('events[0]', events[0])
         self.assert_on_error(error)
+
+    def test_default_streams_events_guest(self) -> None:
+        do_change_is_guest(self.user_profile, True)
+        stream = get_stream("Scotland", self.user_profile.realm)
+        self.do_test(lambda: do_add_default_stream(stream),
+                     state_change_expected = False, num_events=0)
+        self.do_test(lambda: do_remove_default_stream(stream),
+                     state_change_expected = False, num_events=0)
 
     def test_muted_topics_events(self) -> None:
         muted_topics_checker = self.check_events_dict([
@@ -1567,8 +1596,12 @@ class EventsRegisterTest(ZulipTestCase):
             raise AssertionError('No test created for %s' % (name))
         do_set_realm_property(self.user_profile.realm, name, vals[0])
         for val in vals[1:]:
+            state_change_expected = True
+            if name == "zoom_api_secret":
+                state_change_expected = False
             events = self.do_test(
-                lambda: do_set_realm_property(self.user_profile.realm, name, val))
+                lambda: do_set_realm_property(self.user_profile.realm, name, val),
+                state_change_expected=state_change_expected)
             error = schema_checker('events[0]', events[0])
             self.assert_on_error(error)
 
@@ -1822,14 +1855,14 @@ class EventsRegisterTest(ZulipTestCase):
         ])
         author = self.example_user('iago')
         with get_test_image_file('img.png') as img_file:
-            events = self.do_test(lambda: check_add_realm_emoji(get_realm("zulip"),
+            events = self.do_test(lambda: check_add_realm_emoji(self.user_profile.realm,
                                                                 "my_emoji",
                                                                 author,
                                                                 img_file))
         error = schema_checker('events[0]', events[0])
         self.assert_on_error(error)
 
-        events = self.do_test(lambda: do_remove_realm_emoji(get_realm("zulip"), "my_emoji"))
+        events = self.do_test(lambda: do_remove_realm_emoji(self.user_profile.realm, "my_emoji"))
         error = schema_checker('events[0]', events[0])
         self.assert_on_error(error)
 
@@ -1838,12 +1871,12 @@ class EventsRegisterTest(ZulipTestCase):
             ('type', equals('realm_filters')),
             ('realm_filters', check_list(None)),  # TODO: validate tuples in the list
         ])
-        events = self.do_test(lambda: do_add_realm_filter(get_realm("zulip"), "#(?P<id>[123])",
+        events = self.do_test(lambda: do_add_realm_filter(self.user_profile.realm, "#(?P<id>[123])",
                                                           "https://realm.com/my_realm_filter/%(id)s"))
         error = schema_checker('events[0]', events[0])
         self.assert_on_error(error)
 
-        self.do_test(lambda: do_remove_realm_filter(get_realm("zulip"), "#(?P<id>[123])"))
+        self.do_test(lambda: do_remove_realm_filter(self.user_profile.realm, "#(?P<id>[123])"))
         error = schema_checker('events[0]', events[0])
         self.assert_on_error(error)
 
@@ -1856,8 +1889,8 @@ class EventsRegisterTest(ZulipTestCase):
                 ('allow_subdomains', check_bool),
             ])),
         ])
-        realm = get_realm('zulip')
-        events = self.do_test(lambda: do_add_realm_domain(realm, 'zulip.org', False))
+        events = self.do_test(lambda: do_add_realm_domain(
+            self.user_profile.realm, 'zulip.org', False))
         error = schema_checker('events[0]', events[0])
         self.assert_on_error(error)
 
@@ -1869,7 +1902,8 @@ class EventsRegisterTest(ZulipTestCase):
                 ('allow_subdomains', equals(True)),
             ])),
         ])
-        test_domain = RealmDomain.objects.get(realm=realm, domain='zulip.org')
+        test_domain = RealmDomain.objects.get(realm=self.user_profile.realm,
+                                              domain='zulip.org')
         events = self.do_test(lambda: do_change_realm_domain(test_domain, True))
         error = schema_checker('events[0]', events[0])
         self.assert_on_error(error)
@@ -1965,9 +1999,8 @@ class EventsRegisterTest(ZulipTestCase):
         self.assert_on_error(error)
 
     def test_change_realm_icon_source(self) -> None:
-        realm = get_realm('zulip')
-        action = lambda: do_change_icon_source(realm, realm.ICON_FROM_GRAVATAR)
-        events = self.do_test(action, state_change_expected=False)
+        action = lambda: do_change_icon_source(self.user_profile.realm, Realm.ICON_UPLOADED)
+        events = self.do_test(action, state_change_expected=True)
         schema_checker = self.check_events_dict([
             ('type', equals('realm')),
             ('op', equals('update_dict')),
@@ -1975,6 +2008,36 @@ class EventsRegisterTest(ZulipTestCase):
             ('data', check_dict_only([
                 ('icon_url', check_string),
                 ('icon_source', check_string),
+            ])),
+        ])
+        error = schema_checker('events[0]', events[0])
+        self.assert_on_error(error)
+
+    def test_change_realm_day_mode_logo_source(self) -> None:
+        action = lambda: do_change_logo_source(self.user_profile.realm, Realm.LOGO_UPLOADED, False)
+        events = self.do_test(action, state_change_expected=True)
+        schema_checker = self.check_events_dict([
+            ('type', equals('realm')),
+            ('op', equals('update_dict')),
+            ('property', equals('logo')),
+            ('data', check_dict_only([
+                ('logo_url', check_string),
+                ('logo_source', check_string),
+            ])),
+        ])
+        error = schema_checker('events[0]', events[0])
+        self.assert_on_error(error)
+
+    def test_change_realm_night_mode_logo_source(self) -> None:
+        action = lambda: do_change_logo_source(self.user_profile.realm, Realm.LOGO_UPLOADED, True)
+        events = self.do_test(action, state_change_expected=True)
+        schema_checker = self.check_events_dict([
+            ('type', equals('realm')),
+            ('op', equals('update_dict')),
+            ('property', equals('night_logo')),
+            ('data', check_dict_only([
+                ('night_logo_url', check_string),
+                ('night_logo_source', check_string),
             ])),
         ])
         error = schema_checker('events[0]', events[0])
@@ -2385,7 +2448,7 @@ class EventsRegisterTest(ZulipTestCase):
         self.assert_on_error(error)
 
         # Subscribe to a totally new invite-only stream, so it's just Hamlet on it
-        stream = self.make_stream("private", get_realm("zulip"), invite_only=True)
+        stream = self.make_stream("private", self.user_profile.realm, invite_only=True)
         user_profile = self.example_user('hamlet')
         action = lambda: bulk_add_subscriptions([stream], [user_profile])
         events = self.do_test(action, include_subscribers=include_subscribers,

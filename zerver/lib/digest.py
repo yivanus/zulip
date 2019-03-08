@@ -213,8 +213,6 @@ def handle_digest_email(user_profile_id: int, cutoff: float,
 
     # Start building email template data.
     context.update({
-        'realm_name': user_profile.realm.name,
-        'name': user_profile.full_name,
         'unsubscribe_link': one_click_unsubscribe_link(user_profile, "digest")
     })
 
@@ -230,7 +228,7 @@ def handle_digest_email(user_profile_id: int, cutoff: float,
 
     context['unread_pms'] = build_message_list(
         user_profile, [pm.message for pm in pms[:pms_limit]])
-    context['remaining_unread_pms_count'] = min(0, len(pms) - pms_limit)
+    context['remaining_unread_pms_count'] = max(0, len(pms) - pms_limit)
 
     home_view_recipients = [sub.recipient for sub in
                             Subscription.objects.filter(

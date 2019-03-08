@@ -414,14 +414,14 @@ class RealmTest(ZulipTestCase):
 
         req = {"video_chat_provider": ujson.dumps("Zoom")}
         result = self.client_patch('/json/realm', req)
-        self.assert_json_error(result, "Invalid user ID: user ID cannot be empty")
+        self.assert_json_error(result, "User ID cannot be empty")
 
         req = {
             "video_chat_provider": ujson.dumps("Zoom"),
             "zoom_user_id": ujson.dumps("example@example.com")
         }
         result = self.client_patch('/json/realm', req)
-        self.assert_json_error(result, "Invalid API key: API key cannot be empty")
+        self.assert_json_error(result, "API key cannot be empty")
 
         req = {
             "video_chat_provider": ujson.dumps("Zoom"),
@@ -429,7 +429,7 @@ class RealmTest(ZulipTestCase):
             "zoom_api_key": ujson.dumps("abc")
         }
         result = self.client_patch('/json/realm', req)
-        self.assert_json_error(result, "Invalid API secret: API secret cannot be empty")
+        self.assert_json_error(result, "API secret cannot be empty")
 
         with mock.patch("zerver.views.realm.request_zoom_video_call_url", return_value=None):
             req = {
@@ -441,7 +441,8 @@ class RealmTest(ZulipTestCase):
             result = self.client_patch('/json/realm', req)
             self.assert_json_error(result, "Invalid credentials for the Zoom API.")
 
-        with mock.patch("zerver.views.realm.request_zoom_video_call_url", return_value={'join_url': 'example.com'}):
+        with mock.patch("zerver.views.realm.request_zoom_video_call_url",
+                        return_value={'join_url': 'example.com'}) as mock_validation:
             req = {
                 "video_chat_provider": ujson.dumps("Zoom"),
                 "zoom_user_id": ujson.dumps("example@example.com"),
@@ -450,38 +451,69 @@ class RealmTest(ZulipTestCase):
             }
             result = self.client_patch('/json/realm', req)
             self.assert_json_success(result)
+            mock_validation.assert_called_once()
+
+        with mock.patch("zerver.views.realm.request_zoom_video_call_url",
+                        return_value={'join_url': 'example.com'}) as mock_validation:
+            req = {
+                "video_chat_provider": ujson.dumps("Zoom"),
+                "zoom_user_id": ujson.dumps("example@example.com"),
+                "zoom_api_key": ujson.dumps("abc"),
+                "zoom_api_secret": ujson.dumps("abc"),
+            }
+            result = self.client_patch('/json/realm', req)
+            self.assert_json_success(result)
+            mock_validation.assert_not_called()
+
+        with mock.patch("zerver.views.realm.request_zoom_video_call_url",
+                        return_value={'join_url': 'example.com'}) as mock_validation:
+            req = {
+                "video_chat_provider": ujson.dumps("Zoom"),
+                "zoom_user_id": ujson.dumps("example@example.com"),
+                "zoom_api_key": ujson.dumps("abc"),
+                "zoom_api_secret": ujson.dumps(""),
+            }
+            result = self.client_patch('/json/realm', req)
+            self.assert_json_success(result)
+            mock_validation.assert_not_called()
 
     def test_initial_plan_type(self) -> None:
         with self.settings(BILLING_ENABLED=True):
             self.assertEqual(do_create_realm('hosted', 'hosted').plan_type, Realm.LIMITED)
             self.assertEqual(get_realm("hosted").max_invites, settings.INVITES_DEFAULT_REALM_DAILY_MAX)
             self.assertEqual(get_realm("hosted").message_visibility_limit, Realm.MESSAGE_VISIBILITY_LIMITED)
+            self.assertEqual(get_realm("hosted").upload_quota_gb, Realm.UPLOAD_QUOTA_LIMITED)
 
         with self.settings(BILLING_ENABLED=False):
             self.assertEqual(do_create_realm('onpremise', 'onpremise').plan_type, Realm.SELF_HOSTED)
             self.assertEqual(get_realm('onpremise').max_invites, settings.INVITES_DEFAULT_REALM_DAILY_MAX)
             self.assertEqual(get_realm('onpremise').message_visibility_limit, None)
+            self.assertEqual(get_realm("onpremise").upload_quota_gb, None)
 
     def test_change_plan_type(self) -> None:
         realm = get_realm('zulip')
         self.assertEqual(realm.plan_type, Realm.SELF_HOSTED)
         self.assertEqual(realm.max_invites, settings.INVITES_DEFAULT_REALM_DAILY_MAX)
         self.assertEqual(realm.message_visibility_limit, None)
+        self.assertEqual(realm.upload_quota_gb, None)
 
         do_change_plan_type(realm, Realm.STANDARD)
         realm = get_realm('zulip')
         self.assertEqual(realm.max_invites, Realm.INVITES_STANDARD_REALM_DAILY_MAX)
         self.assertEqual(realm.message_visibility_limit, None)
+        self.assertEqual(realm.upload_quota_gb, Realm.UPLOAD_QUOTA_STANDARD)
 
         do_change_plan_type(realm, Realm.LIMITED)
         realm = get_realm('zulip')
         self.assertEqual(realm.max_invites, settings.INVITES_DEFAULT_REALM_DAILY_MAX)
         self.assertEqual(realm.message_visibility_limit, Realm.MESSAGE_VISIBILITY_LIMITED)
+        self.assertEqual(realm.upload_quota_gb, Realm.UPLOAD_QUOTA_LIMITED)
 
         do_change_plan_type(realm, Realm.STANDARD_FREE)
         realm = get_realm('zulip')
         self.assertEqual(realm.max_invites, Realm.INVITES_STANDARD_REALM_DAILY_MAX)
         self.assertEqual(realm.message_visibility_limit, None)
+        self.assertEqual(realm.upload_quota_gb, Realm.UPLOAD_QUOTA_STANDARD)
 
 class RealmAPITest(ZulipTestCase):
 

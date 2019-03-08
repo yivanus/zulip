@@ -107,6 +107,13 @@ def get_raw_user_data(realm_id: int, client_gravatar: bool) -> Dict[int, Dict[st
         for row in user_dicts
     }
 
+def add_realm_logo_fields(state: Dict[str, Any], realm: Realm) -> None:
+    state['realm_logo_url'] = realm_logo_url(realm, night = False)
+    state['realm_logo_source'] = realm.logo_source
+    state['realm_night_logo_url'] = realm_logo_url(realm, night = True)
+    state['realm_night_logo_source'] = realm.night_logo_source
+    state['max_logo_file_size'] = settings.MAX_LOGO_FILE_SIZE
+
 def always_want(msg_type: str) -> bool:
     '''
     This function is used as a helper in
@@ -168,6 +175,10 @@ def fetch_initial_state_data(user_profile: UserProfile,
         for property_name in Realm.property_types:
             state['realm_' + property_name] = getattr(realm, property_name)
 
+        # Don't send the zoom API secret to clients.
+        if state.get('realm_zoom_api_secret'):
+            state['realm_zoom_api_secret'] = ''
+
         # Most state is handled via the property_types framework;
         # these manual entries are for those realm settings that don't
         # fit into that framework.
@@ -180,11 +191,7 @@ def fetch_initial_state_data(user_profile: UserProfile,
         state['realm_icon_url'] = realm_icon_url(realm)
         state['realm_icon_source'] = realm.icon_source
         state['max_icon_file_size'] = settings.MAX_ICON_FILE_SIZE
-        state['realm_logo_url'] = realm_logo_url(realm, night = False)
-        state['realm_logo_source'] = realm.logo_source
-        state['realm_night_logo_url'] = realm_logo_url(realm, night = True)
-        state['realm_night_logo_source'] = realm.night_logo_source
-        state['max_logo_file_size'] = settings.MAX_LOGO_FILE_SIZE
+        add_realm_logo_fields(state, realm)
         state['realm_bot_domain'] = realm.get_bot_domain()
         state['realm_uri'] = realm.uri
         state['realm_available_video_chat_providers'] = realm.VIDEO_CHAT_PROVIDERS
@@ -194,6 +201,9 @@ def fetch_initial_state_data(user_profile: UserProfile,
         state['realm_email_auth_enabled'] = email_auth_enabled(realm)
         state['realm_password_auth_enabled'] = password_auth_enabled(realm)
         state['realm_push_notifications_enabled'] = push_notifications_enabled()
+        state['realm_upload_quota'] = realm.upload_quota_bytes()
+        state['realm_plan_type'] = realm.plan_type
+
         if realm.notifications_stream and not realm.notifications_stream.deactivated:
             notifications_stream = realm.notifications_stream
             state['realm_notifications_stream_id'] = notifications_stream.id
@@ -285,11 +295,17 @@ def fetch_initial_state_data(user_profile: UserProfile,
         state['stream_name_max_length'] = Stream.MAX_NAME_LENGTH
         state['stream_description_max_length'] = Stream.MAX_DESCRIPTION_LENGTH
     if want('default_streams'):
-        state['realm_default_streams'] = streams_to_dicts_sorted(
-            get_default_streams_for_realm(realm.id))
+        if user_profile.is_guest:
+            state['realm_default_streams'] = []
+        else:
+            state['realm_default_streams'] = streams_to_dicts_sorted(
+                get_default_streams_for_realm(realm.id))
     if want('default_stream_groups'):
-        state['realm_default_stream_groups'] = default_stream_groups_to_dicts_sorted(
-            get_default_stream_groups(realm))
+        if user_profile.is_guest:
+            state['realm_default_stream_groups'] = []
+        else:
+            state['realm_default_stream_groups'] = default_stream_groups_to_dicts_sorted(
+                get_default_stream_groups(realm))
 
     if want('stop_words'):
         state['stop_words'] = read_stop_words()

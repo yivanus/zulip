@@ -329,15 +329,14 @@ class AuthBackendTest(ZulipTestCase):
                                             realm=get_realm('zephyr')))
 
     @override_settings(AUTHENTICATION_BACKENDS=('zproject.backends.GitHubAuthBackend',))
-    def test_github_backend(self) -> None:
+    def test_social_auth_backends(self) -> None:
         user = self.example_user('hamlet')
         token_data_dict = {
             'access_token': 'foobar',
             'token_type': 'bearer'
         }
-        account_data_dict = dict(email=user.email, name=user.full_name)
-        email_data = [
-            dict(email=account_data_dict["email"],
+        github_email_data = [
+            dict(email=user.email,
                  verified=True,
                  primary=True),
             dict(email="nonprimary@example.com",
@@ -345,29 +344,31 @@ class AuthBackendTest(ZulipTestCase):
             dict(email="ignored@example.com",
                  verified=False),
         ]
-        httpretty.enable()
-        httpretty.register_uri(
-            httpretty.POST,
-            "https://github.com/login/oauth/access_token",
-            match_querystring=False,
-            status=200,
-            body=json.dumps(token_data_dict))
-        httpretty.register_uri(
-            httpretty.GET,
-            "https://api.github.com/user",
-            status=200,
-            body=json.dumps(account_data_dict)
-        )
-        httpretty.register_uri(
-            httpretty.GET,
-            "https://api.github.com/user/emails",
-            status=200,
-            body=json.dumps(email_data)
-        )
-
-        backend = GitHubAuthBackend()
-        backend.strategy = DjangoStrategy(storage=BaseDjangoStorage())
-        orig_authenticate = GitHubAuthBackend.authenticate
+        backends_to_test = {
+            'github': {
+                'urls': [
+                    {
+                        'url': "https://github.com/login/oauth/access_token",
+                        'method': httpretty.POST,
+                        'status': 200,
+                        'body': json.dumps(token_data_dict),
+                    },
+                    {
+                        'url': "https://api.github.com/user",
+                        'method': httpretty.GET,
+                        'status': 200,
+                        'body': json.dumps(dict(email=user.email, name=user.full_name)),
+                    },
+                    {
+                        'url': "https://api.github.com/user/emails",
+                        'method': httpretty.GET,
+                        'status': 200,
+                        'body': json.dumps(github_email_data),
+                    },
+                ],
+                'backend': GitHubAuthBackend,
+            }
+        }   # type: Dict[str, Any]
 
         def patched_authenticate(*args: Any, **kwargs: Any) -> Any:
             if 'subdomain' in kwargs:
@@ -375,23 +376,38 @@ class AuthBackendTest(ZulipTestCase):
                 del kwargs['subdomain']
             result = orig_authenticate(backend, *args, **kwargs)
             return result
-        backend.authenticate = patched_authenticate
-        good_kwargs = dict(backend=backend, strategy=backend.strategy,
-                           storage=backend.strategy.storage,
-                           response=token_data_dict,
-                           subdomain='zulip')
-        bad_kwargs = dict(subdomain='acme')
-        with mock.patch('zerver.views.auth.redirect_and_log_into_subdomain',
-                        return_value=user):
-            self.verify_backend(backend,
-                                good_kwargs=good_kwargs,
-                                bad_kwargs=bad_kwargs)
-            bad_kwargs['subdomain'] = "zephyr"
-            self.verify_backend(backend,
-                                good_kwargs=good_kwargs,
-                                bad_kwargs=bad_kwargs)
-        backend.authenticate = orig_authenticate
-        httpretty.disable()
+
+        for backend_name in backends_to_test:
+            httpretty.enable(allow_net_connect=False)
+            urls = backends_to_test[backend_name]['urls']   # type: List[Dict[str, Any]]
+            for details in urls:
+                httpretty.register_uri(
+                    details['method'],
+                    details['url'],
+                    status=details['status'],
+                    body=details['body'])
+            backend_class = backends_to_test[backend_name]['backend']
+            backend = backend_class()
+            backend.strategy = DjangoStrategy(storage=BaseDjangoStorage())
+            orig_authenticate = backend_class.authenticate
+            backend.authenticate = patched_authenticate
+            good_kwargs = dict(backend=backend, strategy=backend.strategy,
+                               storage=backend.strategy.storage,
+                               response=token_data_dict,
+                               subdomain='zulip')
+            bad_kwargs = dict(subdomain='acme')
+            with mock.patch('zerver.views.auth.redirect_and_log_into_subdomain',
+                            return_value=user):
+                self.verify_backend(backend,
+                                    good_kwargs=good_kwargs,
+                                    bad_kwargs=bad_kwargs)
+                bad_kwargs['subdomain'] = "zephyr"
+                self.verify_backend(backend,
+                                    good_kwargs=good_kwargs,
+                                    bad_kwargs=bad_kwargs)
+            backend.authenticate = orig_authenticate
+            httpretty.disable()
+            httpretty.reset()
 
 class ResponseMock:
     def __init__(self, status_code: int, data: Any) -> None:
@@ -483,7 +499,7 @@ class SocialAuthBase(ZulipTestCase):
 
         # We register callbacks for the key URLs on Identity Provider that
         # auth completion url will call
-        httpretty.enable()
+        httpretty.enable(allow_net_connect=False)
         httpretty.register_uri(
             httpretty.POST,
             self.ACCESS_TOKEN_URL,
@@ -1718,8 +1734,6 @@ class FetchAuthBackends(ZulipTestCase):
             ('realm_name', check_string),
             ('realm_description', check_string),
             ('realm_icon', check_string),
-            ('realm_logo', check_string),
-            ('realm_night_logo', check_string),
         ])
 
     def test_fetch_auth_backend_format(self) -> None:
@@ -2550,19 +2564,23 @@ class TestLDAP(ZulipLDAPTestCase):
             self.assertIs(user_profile, None)
 
     @override_settings(AUTHENTICATION_BACKENDS=('zproject.backends.ZulipLDAPAuthBackend',))
-    def test_login_failure_due_to_wrong_subdomain(self) -> None:
+    def test_login_success_with_different_subdomain(self) -> None:
         self.mock_ldap.directory = {
             'uid=hamlet,ou=users,dc=zulip,dc=com': {
-                'userPassword': ['testing', ]
+                'fn': ['King Hamlet', ],
+                'sn': ['Hamlet', ],
+                'userPassword': ['testing', ],
             }
         }
+        ldap_user_attr_map = {'full_name': 'fn', 'short_name': 'sn'}
         with self.settings(
                 LDAP_APPEND_DOMAIN='zulip.com',
                 AUTH_LDAP_BIND_PASSWORD='',
-                AUTH_LDAP_USER_DN_TEMPLATE='uid=%(user)s,ou=users,dc=zulip,dc=com'):
-            user_profile = self.backend.authenticate(self.example_email("hamlet"), 'testing',
+                AUTH_LDAP_USER_DN_TEMPLATE='uid=%(user)s,ou=users,dc=zulip,dc=com',
+                AUTH_LDAP_USER_ATTR_MAP=ldap_user_attr_map):
+            user_profile = self.backend.authenticate(self.example_email('hamlet'), 'testing',
                                                      realm=get_realm('zephyr'))
-            self.assertIs(user_profile, None)
+            self.assertEqual(user_profile.email, self.example_email('hamlet'))
 
     @override_settings(AUTHENTICATION_BACKENDS=('zproject.backends.ZulipLDAPAuthBackend',))
     def test_login_failure_due_to_invalid_subdomain(self) -> None:
@@ -2878,6 +2896,23 @@ class TestZulipLDAPUserPopulator(ZulipLDAPTestCase):
             with mock.patch('zproject.backends.do_update_user_custom_profile_data') as f:
                 self.perform_ldap_sync(self.example_user('hamlet'))
                 f.assert_called_once_with(*expected_call_args)
+
+    def test_update_custom_profile_field_not_present_in_ldap(self) -> None:
+        self.mock_ldap.directory = {
+            'uid=hamlet,ou=users,dc=zulip,dc=com': {
+                'cn': ['King Hamlet', ],
+            }
+        }
+        hamlet = self.example_user('hamlet')
+        no_op_field = CustomProfileField.objects.get(realm=hamlet.realm, name='Birthday')
+        expected_value = CustomProfileFieldValue.objects.get(user_profile=hamlet, field=no_op_field).value
+
+        with self.settings(AUTH_LDAP_USER_ATTR_MAP={'full_name': 'cn',
+                                                    'custom_profile_field__birthday': 'birthDate'}):
+            self.perform_ldap_sync(self.example_user('hamlet'))
+
+        actual_value = CustomProfileFieldValue.objects.get(user_profile=hamlet, field=no_op_field).value
+        self.assertEqual(actual_value, expected_value)
 
 class TestZulipAuthMixin(ZulipTestCase):
     def test_get_user(self) -> None:

@@ -1,6 +1,5 @@
 .right-sidebar {
-    -webkit-font-smoothing: antialiased;
-    font-size: 0.89rem;
+    font-size: 14px;
 }
 
 .right-sidebar a:hover {
@@ -50,9 +49,32 @@
     padding-right: 15px;
 }
 
-#user_presences .arrow {
+#user_presences .user-list-arrow {
+    position: absolute;
     top: 0px;
+    right: 10px;
+    font-size: 0.8em;
+    display: none;
 }
+
+.user-list-arrow i {
+    padding-right: 0.25em;
+    display: inline-block;
+    width: 13px;
+}
+
+#user_presences li:hover .user-list-arrow {
+    display: inline;
+    cursor: pointer;
+    color: hsl(0, 0%, 53%);
+}
+
+#user_presences li .user-list-arrow:hover {
+    display: inline;
+    cursor: pointer;
+    color: hsl(0, 0%, 0%);
+}
+
 
 #group-pm-title {
     margin: 10px 0px 0px 0px;

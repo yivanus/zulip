@@ -17,8 +17,8 @@ from analytics.lib.counts import COUNT_STATS, do_increment_logging_stat, \
 
 from zerver.lib.bugdown import (
     version as bugdown_version,
-    url_embed_preview_enabled_for_realm,
-    convert as bugdown_convert
+    url_embed_preview_enabled,
+    convert as bugdown_convert,
 )
 from zerver.lib.addressee import Addressee
 from zerver.lib.bot_config import (
@@ -107,7 +107,7 @@ from zerver.models import Realm, RealmEmoji, Stream, UserProfile, UserActivity, 
     get_user_including_cross_realm, get_user_by_id_in_realm_including_cross_realm, \
     get_stream_by_id_in_realm
 
-from zerver.lib.alert_words import alert_words_in_realm
+from zerver.lib.alert_words import get_alert_word_automaton
 from zerver.lib.avatar import avatar_url, avatar_url_from_dict
 from zerver.lib.stream_recipient import StreamRecipientMap
 from zerver.lib.validator import check_widget_content
@@ -558,6 +558,10 @@ def do_set_realm_property(realm: Realm, name: str, value: Any) -> None:
 
     setattr(realm, name, value)
     realm.save(update_fields=[name])
+
+    if name == 'zoom_api_secret':
+        # Send '' as the value through the API for the API secret
+        value = ''
     event = dict(
         type='realm',
         op='update',
@@ -887,13 +891,13 @@ def render_incoming_message(message: Message,
                             realm: Realm,
                             mention_data: Optional[bugdown.MentionData]=None,
                             email_gateway: Optional[bool]=False) -> str:
-    realm_alert_words = alert_words_in_realm(realm)
+    realm_alert_words_automaton = get_alert_word_automaton(realm)
     try:
         rendered_content = render_markdown(
             message=message,
             content=content,
             realm=realm,
-            realm_alert_words=realm_alert_words,
+            realm_alert_words_automaton = realm_alert_words_automaton,
             user_ids=user_ids,
             mention_data=mention_data,
             email_gateway=email_gateway,
@@ -1380,7 +1384,7 @@ def do_send_messages(messages_maybe_none: Sequence[Optional[MutableMapping[str, 
             event['sender_queue_id'] = message['sender_queue_id']
         send_event(message['realm'], event, users)
 
-        if url_embed_preview_enabled_for_realm(message['message']) and links_for_embed:
+        if url_embed_preview_enabled(message['message']) and links_for_embed:
             event_data = {
                 'message_id': message['message'].id,
                 'message_content': message['message'].content,
@@ -1484,6 +1488,9 @@ def create_user_messages(message: Message,
     #   case the notifications code will call `access_message` on the
     #   message to re-verify permissions, and for private streams,
     #   will get an error if the UserMessage row doesn't exist yet.
+    #
+    # See https://zulip.readthedocs.io/en/latest/subsystems/sending-messages.html#soft-deactivation
+    # for details on this system.
     user_messages = []
     for um in ums_to_create:
         if (um.user_profile_id in long_term_idle_user_ids and
@@ -1722,6 +1729,9 @@ def get_default_value_for_history_public_to_subscribers(
 
     return history_public_to_subscribers
 
+def render_stream_description(text: str) -> str:
+    return bugdown_convert(text, no_previews=True)
+
 def create_stream_if_needed(realm: Realm,
                             stream_name: str,
                             *,
@@ -1747,7 +1757,7 @@ def create_stream_if_needed(realm: Realm,
     )
 
     if created:
-        stream.rendered_description = bugdown_convert(stream.description)
+        stream.rendered_description = render_stream_description(stream_description)
         stream.save(update_fields=["rendered_description"])
         Recipient.objects.create(type_id=stream.id, type=Recipient.STREAM)
         if stream.is_public():
@@ -1972,15 +1982,6 @@ def check_send_stream_message(sender: UserProfile, client: Client, stream_name: 
 def check_send_private_message(sender: UserProfile, client: Client,
                                receiving_user: UserProfile, body: str) -> int:
     addressee = Addressee.for_user_profile(receiving_user)
-    message = check_message(sender, client, addressee, body)
-
-    return do_send_messages([message])[0]
-
-def check_send_private_message_from_emails(
-        sender: UserProfile, client: Client,
-        receiving_emails: Sequence[str], body: str
-) -> int:
-    addressee = Addressee.for_private(receiving_emails, sender.realm)
     message = check_message(sender, client, addressee, body)
 
     return do_send_messages([message])[0]
@@ -3310,16 +3311,19 @@ def do_change_plan_type(realm: Realm, plan_type: int) -> None:
     if plan_type == Realm.STANDARD:
         realm.max_invites = Realm.INVITES_STANDARD_REALM_DAILY_MAX
         realm.message_visibility_limit = None
+        realm.upload_quota_gb = Realm.UPLOAD_QUOTA_STANDARD
     elif plan_type == Realm.STANDARD_FREE:
         realm.max_invites = Realm.INVITES_STANDARD_REALM_DAILY_MAX
         realm.message_visibility_limit = None
+        realm.upload_quota_gb = Realm.UPLOAD_QUOTA_STANDARD
     elif plan_type == Realm.LIMITED:
         realm.max_invites = settings.INVITES_DEFAULT_REALM_DAILY_MAX
         realm.message_visibility_limit = Realm.MESSAGE_VISIBILITY_LIMITED
+        realm.upload_quota_gb = Realm.UPLOAD_QUOTA_LIMITED
 
     update_first_visible_message_id(realm)
 
-    realm.save(update_fields=['_max_invites', 'message_visibility_limit'])
+    realm.save(update_fields=['_max_invites', 'message_visibility_limit', 'upload_quota_gb'])
 
 def do_change_default_sending_stream(user_profile: UserProfile, stream: Optional[Stream],
                                      log: bool=True) -> None:
@@ -3501,7 +3505,7 @@ def do_rename_stream(stream: Stream,
 
 def do_change_stream_description(stream: Stream, new_description: str) -> None:
     stream.description = new_description
-    stream.rendered_description = bugdown_convert(new_description)
+    stream.rendered_description = render_stream_description(new_description)
     stream.save(update_fields=['description', 'rendered_description'])
 
     event = dict(
@@ -3646,14 +3650,14 @@ def notify_default_streams(realm: Realm) -> None:
         type="default_streams",
         default_streams=streams_to_dicts_sorted(get_default_streams_for_realm(realm.id))
     )
-    send_event(realm, event, active_user_ids(realm.id))
+    send_event(realm, event, active_non_guest_user_ids(realm.id))
 
 def notify_default_stream_groups(realm: Realm) -> None:
     event = dict(
         type="default_stream_groups",
         default_stream_groups=default_stream_groups_to_dicts_sorted(get_default_stream_groups(realm))
     )
-    send_event(realm, event, active_user_ids(realm.id))
+    send_event(realm, event, active_non_guest_user_ids(realm.id))
 
 def do_add_default_stream(stream: Stream) -> None:
     realm_id = stream.realm_id
@@ -4464,20 +4468,28 @@ def get_email_gateway_message_string_from_address(address: str) -> Optional[str]
 
     return msg_string
 
-def decode_email_address(email: str) -> Optional[Tuple[str, str]]:
-    # Perform the reverse of encode_email_address. Returns a tuple of (streamname, email_token)
+def decode_email_address(email: str) -> Optional[Tuple[str, str, bool]]:
+    # Perform the reverse of encode_email_address. Returns a tuple of
+    # (streamname, email_token, show_sender)
     msg_string = get_email_gateway_message_string_from_address(email)
-
     if msg_string is None:
         return None
-    elif '.' in msg_string:
+
+    if msg_string.endswith(('+show-sender', '.show-sender')):
+        show_sender = True
+        msg_string = msg_string[:-12]  # strip "+show-sender"
+    else:
+        show_sender = False
+
+    if '.' in msg_string:
         # Workaround for Google Groups and other programs that don't accept emails
         # that have + signs in them (see Trac #2102)
         encoded_stream_name, token = msg_string.split('.')
     else:
         encoded_stream_name, token = msg_string.split('+')
+
     stream_name = re.sub(r"%\d{4}", lambda x: chr(int(x.group(0)[1:])), encoded_stream_name)
-    return stream_name, token
+    return stream_name, token, show_sender
 
 SubHelperT = Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]
 
@@ -5143,9 +5155,11 @@ def get_web_public_streams(realm: Realm) -> List[Dict[str, Any]]:
     streams = [(row.to_dict()) for row in query]
     return streams
 
-def do_get_streams(user_profile: UserProfile, include_public: bool=True,
-                   include_subscribed: bool=True, include_all_active: bool=False,
-                   include_default: bool=False) -> List[Dict[str, Any]]:
+def do_get_streams(
+        user_profile: UserProfile, include_public: bool=True,
+        include_subscribed: bool=True, include_all_active: bool=False,
+        include_default: bool=False, include_owner_subscribed: bool=False
+) -> List[Dict[str, Any]]:
     if include_all_active and not user_profile.is_api_super_user:
         raise JsonableError(_("User not authorized for this query"))
 
@@ -5158,19 +5172,35 @@ def do_get_streams(user_profile: UserProfile, include_public: bool=True,
             active=True,
         ).select_related('recipient')
 
+        # We construct a query as the or (|) of the various sources
+        # this user requested streams from.
+        query_filter = None
+
+        def add_filter_option(option: Q) -> None:
+            nonlocal query_filter
+            if query_filter is None:
+                query_filter = option
+            else:
+                query_filter |= option
+
         if include_subscribed:
             recipient_check = Q(id__in=[sub.recipient.type_id for sub in user_subs])
+            add_filter_option(recipient_check)
         if include_public:
             invite_only_check = Q(invite_only=False)
+            add_filter_option(invite_only_check)
+        if include_owner_subscribed and user_profile.is_bot:
+            assert user_profile.bot_owner is not None
+            owner_subs = get_stream_subscriptions_for_user(user_profile.bot_owner).filter(
+                active=True,
+            ).select_related('recipient')
+            owner_subscribed_check = Q(id__in=[sub.recipient.type_id for sub in owner_subs])
+            add_filter_option(owner_subscribed_check)
 
-        if include_subscribed and include_public:
-            query = query.filter(recipient_check | invite_only_check)
-        elif include_public:
-            query = query.filter(invite_only_check)
-        elif include_subscribed:
-            query = query.filter(recipient_check)
+        if query_filter is not None:
+            query = query.filter(query_filter)
         else:
-            # We're including nothing, so don't bother hitting the DB.
+            # Don't bother doing to the database with no valid sources
             query = []
 
     streams = [(row.to_dict()) for row in query]
@@ -5321,7 +5351,7 @@ def do_update_user_custom_profile_data(user_profile: UserProfile,
                 field_id=field['id'])
             field_value.value = field['value']
             if field_value.field.is_renderable():
-                field_value.rendered_value = bugdown_convert(str(field['value']))
+                field_value.rendered_value = render_stream_description(str(field['value']))
                 field_value.save(update_fields=['value', 'rendered_value'])
             else:
                 field_value.save(update_fields=['value'])

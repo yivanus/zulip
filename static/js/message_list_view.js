@@ -590,21 +590,35 @@ MessageListView.prototype = {
         return templates.render('single_message', msg_to_render);
     },
 
+    _render_group: function (opts) {
+        var message_groups = opts.message_groups;
+        var use_match_properties = opts.use_match_properties;
+        var table_name = opts.table_name;
+
+        return $(templates.render('message_group', {
+            message_groups: message_groups,
+            use_match_properties: use_match_properties,
+            table_name: table_name,
+        }));
+    },
+
     render: function (messages, where, messages_are_new) {
         // This function processes messages into chunks with separators between them,
         // and templates them to be inserted as table rows into the DOM.
 
-        if (messages.length === 0 || this.table_name === undefined) {
+        // Store this in a separate variable so it doesn't get
+        // confusingly masked in upcoming loops.
+        var self = this;
+
+        if (messages.length === 0 || self.table_name === undefined) {
             return;
         }
 
-        var list = this.list; // for convenience
-        var table_name = this.table_name;
+        var list = self.list; // for convenience
+        var table_name = self.table_name;
         var table = rows.get_table(table_name);
         var orig_scrolltop_offset;
         var message_containers;
-
-        var self = this;
 
         // If we start with the message feed scrolled up (i.e.
         // the bottom message is not visible), then we will respect
@@ -642,12 +656,12 @@ MessageListView.prototype = {
         // This function processes messages into chunks with separators between them,
         // and templates them to be inserted as table rows into the DOM.
 
-        if (message_containers.length === 0 || this.table_name === undefined) {
+        if (message_containers.length === 0 || self.table_name === undefined) {
             return;
         }
 
-        var new_message_groups = this.build_message_groups(message_containers, this.table_name);
-        var message_actions = this.merge_message_groups(new_message_groups, where);
+        var new_message_groups = self.build_message_groups(message_containers, self.table_name);
+        var message_actions = self.merge_message_groups(new_message_groups, where);
         var new_dom_elements = [];
         var rendered_groups;
         var dom_messages;
@@ -662,11 +676,11 @@ MessageListView.prototype = {
         if (message_actions.prepend_groups.length > 0) {
             save_scroll_position();
 
-            rendered_groups = $(templates.render('message_group', {
+            rendered_groups = self._render_group({
                 message_groups: message_actions.prepend_groups,
                 use_match_properties: self.list.is_search(),
                 table_name: self.table_name,
-            }));
+            });
 
             dom_messages = rendered_groups.find('.message_row');
             new_dom_elements = new_dom_elements.concat(rendered_groups);
@@ -689,11 +703,11 @@ MessageListView.prototype = {
                 // Remove the top date_row, we'll re-add it after rendering
                 old_message_group.prev('.date_row').remove();
 
-                rendered_groups = $(templates.render('message_group', {
+                rendered_groups = self._render_group({
                     message_groups: [message_group],
                     use_match_properties: self.list.is_search(),
                     table_name: self.table_name,
-                }));
+                });
 
                 dom_messages = rendered_groups.find('.message_row');
                 // Not adding to new_dom_elements it is only used for autoscroll
@@ -740,11 +754,11 @@ MessageListView.prototype = {
             // Remove the trailing bookend; it'll be re-added after we do our rendering
             self.clear_trailing_bookend();
 
-            rendered_groups = $(templates.render('message_group', {
+            rendered_groups = self._render_group({
                 message_groups: message_actions.append_groups,
                 use_match_properties: self.list.is_search(),
                 table_name: self.table_name,
-            }));
+            });
 
             dom_messages = rendered_groups.find('.message_row');
             new_dom_elements = new_dom_elements.concat(rendered_groups);

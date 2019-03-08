@@ -27,13 +27,12 @@
 * [Preview messages before sending](/help/preview-your-message-before-sending)
 * [Message drafts](/help/view-and-edit-your-message-drafts)
 * [Emoji and emoticons](/help/emoji-and-emoticons)
-* [Video calls](/help/start-a-call)
+* [Start a video call](/help/start-a-call)
 * [Share and upload files](/help/share-and-upload-files)
 * [Enable Enter to send](/help/enable-enter-to-send)
 * [Verify a message was sent](/help/verify-your-message-was-successfully-sent)
 * [Quote and reply](/help/quote-and-reply)
-* [@-mention a user](/help/at-mention-a-user)
-* [Notify everyone on a stream](/help/notify-everyone-on-a-stream)
+* [Mention a user or group](/help/mention-a-user-or-group)
 * [Edit or delete a message](/help/edit-or-delete-a-message)
 * [Message a stream by email](/help/message-a-stream-by-email)
 
@@ -54,6 +53,7 @@
 ## People
 * [Check whether someone is on-line](/help/check-whether-someone-is-here-or-away)
 * [View someone's profile](/help/view-someones-profile)
+* [Private messages](/help/private-messages)
 
 ## Streams & topics
 * [About streams and topics](/help/about-streams-and-topics)
@@ -65,9 +65,9 @@
 * [Pin a stream](/help/pin-a-stream)
 * [Change the color of a stream](/help/change-the-color-of-a-stream)
 * [Message a stream by email](/help/message-a-stream-by-email)
+* [Start a new topic](/help/start-a-new-topic)
 * [Edit the topic of a message](/help/change-the-topic-of-a-message)
 * [Rename a topic](/help/rename-a-topic)
-* [Delete a topic](/help/delete-a-topic)
 
 ## Notifications
 * [Stream notifications](/help/stream-notifications)
@@ -75,7 +75,6 @@
 * [Mute or unmute a stream](/help/mute-a-stream)
 * [Mute or unmute a topic](/help/mute-a-topic)
 * [Alert words](/help/add-an-alert-word)
-* [Notify everyone on a stream](/help/notify-everyone-on-a-stream)
 * [Disable new login emails](/help/disable-new-login-emails)
 * [Configure missed message emails](/help/configure-missed-message-emails)
 * [Change notification sound](/help/change-notification-sound)
@@ -132,18 +131,21 @@
 ## Users & bots
 * [Invite new users](/help/invite-new-users)
 * [Allow anyone to join](/help/allow-anyone-to-join-without-an-invitation)
+* [User groups](/help/user-groups)
 * [Deactivate or reactivate a user](/help/deactivate-or-reactivate-a-user)
 * [Deactivate or reactivate a bot](/help/deactivate-or-reactivate-a-bot)
 * [Restrict bot creation](/help/restrict-bot-creation)
-* [Make a user an administrator](/help/make-a-user-an-administrator)
+* [Change a user's role](/help/change-a-users-role)
 * [Change a user's name](/help/change-a-users-name)
 * [View all bots in your organization](/help/view-all-bots-in-your-organization)
 
 ## Stream management
 * [Stream permissions](/help/stream-permissions)
 * [Delete or archive a stream](/help/delete-a-stream)
+* [Delete a topic](/help/delete-a-topic)
 * [Set default streams for new users](/help/set-default-streams-for-new-users)
 * [Rename a stream](/help/rename-a-stream)
 * [Change a stream's description](/help/change-the-stream-description)
 * [Change the privacy of a stream](/help/change-the-privacy-of-a-stream)
 * [Add or remove users from a stream](/help/add-or-remove-users-from-a-stream)
+* [Announcement-only streams](/help/announcement-only-streams)

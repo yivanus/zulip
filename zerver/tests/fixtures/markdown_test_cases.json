@@ -543,6 +543,11 @@
       "text_content": "Emojis like :man-girl-girl: which have ZWJ are banned for now."
     },
     {
+      "name": "valid_emoji_preceded_by_invalid_emoji",
+      "input": "This is :invalidemoji: which should not prevent rendering :smile:",
+      "expected_output": "<p>This is :invalidemoji: which should not prevent rendering <span aria-label=\"smile\" class=\"emoji emoji-263a\" role=\"img\" title=\"smile\">:smile:</span></p>"
+    },
+    {
       "name": "safe_html",
       "input": "<h1>stay normal</h1> thanks",
       "expected_output": "<p>&lt;h1&gt;stay normal&lt;/h1&gt; thanks</p>",
@@ -707,6 +712,12 @@
       "input": "$$\\<script type='text/javascript'>alert('xss');</script>$$\n\n~~~math\n\\<script type='text/javascript'>alert('xss');</script>\n~~~",
       "expected_output": "<p><span class=\"tex-error\">$$\\&lt;script type='text/javascript'&gt;alert('xss');&lt;/script&gt;$$</span></p>\n<p><span class=\"tex-error\">\\&lt;script type=&#39;text/javascript&#39;&gt;alert(&#39;xss&#39;);&lt;/script&gt;</span></p>",
       "marked_expected_output": "<p><span class=\"tex-error\">$$\\&lt;script type=&#39;text/javascript&#39;&gt;alert(&#39;xss&#39;);&lt;/script&gt;$$</span></p>\n<span class=\"tex-error\">\\&lt;script type=&#39;text/javascript&#39;&gt;alert(&#39;xss&#39;);&lt;/script&gt;</span>"
+    },
+    {
+      "name": "auto_renumbered_list_blankline",
+      "input": "1. A\n\n1. B\n\n1. C\n\n1. D\nordinary paragraph\n1. AA\n\n1. BB",
+      "expected_output": "<p>1. A<br>\n2. B<br>\n3. C<br>\n4. D<br>\nordinary paragraph<br>\n1. AA<br>\n2. BB</p>",
+      "text_content": "1. A\n2. B\n3. C\n4. D\nordinary paragraph\n1. AA\n2. BB"
     }
   ],
   "linkify_tests": [

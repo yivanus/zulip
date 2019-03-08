@@ -708,6 +708,16 @@ class StreamAdminTest(ZulipTestCase):
         stream = get_stream('stream_name1', realm)
         self.assertEqual(stream.description, 'a multi line description')
 
+        # Verify that we don't render inline URL previews in this code path.
+        with self.settings(INLINE_URL_EMBED_PREVIEW=True):
+            result = self.client_patch('/json/streams/%d' % (stream_id,),
+                                       {'description': ujson.dumps('See https://zulipchat.com/team')})
+        self.assert_json_success(result)
+        stream = get_stream('stream_name1', realm)
+        self.assertEqual(stream.rendered_description,
+                         '<p>See <a href="https://zulipchat.com/team" target="_blank" '
+                         'title="https://zulipchat.com/team">https://zulipchat.com/team</a></p>')
+
     def test_change_stream_description_requires_realm_admin(self) -> None:
         user_profile = self.example_user('hamlet')
         email = user_profile.email
@@ -2989,6 +2999,91 @@ class SubscriptionAPITest(ZulipTestCase):
                 )
             )
         self.assert_length(queries, 51)
+
+class GetBotOwnerStreamsTest(ZulipTestCase):
+    def test_streams_api_for_bot_owners(self) -> None:
+        hamlet = self.example_user('hamlet')
+        test_bot = self.create_test_bot('foo', hamlet, bot_owner=hamlet)
+        assert test_bot is not None
+        realm = get_realm('zulip')
+        self.login(hamlet.email)
+
+        # Check it correctly lists the bot owner's subs with
+        # include_owner_subscribed=true
+        result = self.api_get(
+            test_bot.email,
+            "/api/v1/streams?include_owner_subscribed=true&include_public=false&include_subscribed=false")
+        owner_subs = self.api_get(hamlet.email, "/api/v1/users/me/subscriptions")
+
+        self.assert_json_success(result)
+        json = result.json()
+        self.assertIn("streams", json)
+        self.assertIsInstance(json["streams"], list)
+
+        self.assert_json_success(owner_subs)
+        owner_subs_json = ujson.loads(owner_subs.content)
+
+        self.assertEqual(sorted([s["name"] for s in json["streams"]]),
+                         sorted([s["name"] for s in owner_subs_json["subscriptions"]]))
+
+        # Check it correctly lists the bot owner's subs and the
+        # bot's subs
+        self.subscribe(test_bot, 'Scotland')
+        result = self.api_get(
+            test_bot.email,
+            "/api/v1/streams?include_owner_subscribed=true&include_public=false&include_subscribed=true"
+        )
+
+        self.assert_json_success(result)
+        json = result.json()
+        self.assertIn("streams", json)
+        self.assertIsInstance(json["streams"], list)
+
+        actual = sorted([s["name"] for s in json["streams"]])
+        expected = [s["name"] for s in owner_subs_json["subscriptions"]]
+        expected.append('Scotland')
+        expected.sort()
+
+        self.assertEqual(actual, expected)
+
+        # Check it correctly lists the bot owner's subs + all public streams
+        self.make_stream('private_stream', realm=realm, invite_only=True)
+        self.subscribe(test_bot, 'private_stream')
+        result = self.api_get(
+            test_bot.email,
+            "/api/v1/streams?include_owner_subscribed=true&include_public=true&include_subscribed=false"
+        )
+
+        self.assert_json_success(result)
+        json = result.json()
+        self.assertIn("streams", json)
+        self.assertIsInstance(json["streams"], list)
+
+        actual = sorted([s["name"] for s in json["streams"]])
+        expected = [s["name"] for s in owner_subs_json["subscriptions"]]
+        expected.extend(['Rome', 'Venice', 'Scotland'])
+        expected.sort()
+
+        self.assertEqual(actual, expected)
+
+        # Check it correctly lists the bot owner's subs + all public streams +
+        # the bot's subs
+        result = self.api_get(
+            test_bot.email,
+            "/api/v1/streams?include_owner_subscribed=true&include_public=true&include_subscribed=true"
+        )
+
+        self.assert_json_success(result)
+        json = result.json()
+        self.assertIn("streams", json)
+        self.assertIsInstance(json["streams"], list)
+
+        actual = sorted([s["name"] for s in json["streams"]])
+        expected = [s["name"] for s in owner_subs_json["subscriptions"]]
+        expected.extend(['Rome', 'Venice', 'Scotland', 'private_stream'])
+        expected.sort()
+
+        self.assertEqual(actual, expected)
 
 class GetPublicStreamsTest(ZulipTestCase):
 

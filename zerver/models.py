@@ -4,7 +4,7 @@ from typing.re import Match
 
 from django.db import models
 from django.db.models.query import QuerySet
-from django.db.models import Manager, CASCADE
+from django.db.models import Manager, Sum, CASCADE
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, UserManager, \
     PermissionsMixin
@@ -20,7 +20,8 @@ from zerver.lib.cache import cache_with_key, flush_user_profile, flush_realm, \
     display_recipient_cache_key, cache_delete, active_user_ids_cache_key, \
     get_stream_cache_key, realm_user_dicts_cache_key, \
     bot_dicts_in_realm_cache_key, realm_user_dict_fields, \
-    bot_dict_fields, flush_message, flush_submessage, bot_profile_cache_key
+    bot_dict_fields, flush_message, flush_submessage, bot_profile_cache_key, \
+    flush_used_upload_space_cache, get_realm_used_upload_space_cache_key
 from zerver.lib.utils import make_safe_digest, generate_random_token
 from django.db import transaction
 from django.utils.timezone import now as timezone_now
@@ -254,6 +255,8 @@ class Realm(models.Model):
     bot_creation_policy = models.PositiveSmallIntegerField(default=BOT_CREATION_EVERYONE)  # type: int
 
     # See upload_quota_bytes; don't interpret upload_quota_gb directly.
+    UPLOAD_QUOTA_LIMITED = 5
+    UPLOAD_QUOTA_STANDARD = 50
     upload_quota_gb = models.IntegerField(null=True)  # type: Optional[int]
 
     video_chat_provider = models.CharField(default=u"Jitsi", max_length=MAX_VIDEO_CHAT_PROVIDER_LENGTH)
@@ -393,6 +396,13 @@ class Realm(models.Model):
         # We describe the quota to users in "GB" or "gigabytes", but actually apply
         # it as gibibytes (GiB) to be a bit more generous in case of confusion.
         return self.upload_quota_gb << 30
+
+    @cache_with_key(get_realm_used_upload_space_cache_key, timeout=3600*24*7)
+    def currently_used_upload_space_bytes(self) -> int:
+        used_space = Attachment.objects.filter(realm=self).aggregate(Sum('size'))['size__sum']
+        if used_space is None:
+            return 0
+        return used_space
 
     @property
     def subdomain(self) -> str:
@@ -1743,6 +1753,9 @@ class Attachment(AbstractAttachment):
                 'name': time.mktime(m.pub_date.timetuple()) * 1000
             } for m in self.messages.all()]
         }
+
+post_save.connect(flush_used_upload_space_cache, sender=Attachment)
+post_delete.connect(flush_used_upload_space_cache, sender=Attachment)
 
 def validate_attachment_request(user_profile: UserProfile, path_id: str) -> Optional[bool]:
     try:

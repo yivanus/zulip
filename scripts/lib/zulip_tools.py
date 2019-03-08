@@ -110,8 +110,15 @@ def subprocess_text_output(args):
     # type: (Sequence[str]) -> str
     return subprocess.check_output(args, universal_newlines=True).strip()
 
-def get_zulip_uid() -> int:
-    return os.stat(get_deploy_root()).st_uid
+def get_zulip_pwent() -> pwd.struct_passwd:
+    deploy_root_uid = os.stat(get_deploy_root()).st_uid
+    if deploy_root_uid != 0:
+        return pwd.getpwuid(deploy_root_uid)
+
+    # In the case that permissions got messed up and the deployment
+    # directory is unexpectedly owned by root, we fallback to the
+    # `zulip` user as that's the correct value in production.
+    return pwd.getpwnam("zulip")
 
 def su_to_zulip(save_suid=False):
     # type: (bool) -> None
@@ -120,7 +127,7 @@ def su_to_zulip(save_suid=False):
     installation).  It should never be run from the installer or other
     production contexts before /home/zulip/deployments/current is
     created."""
-    pwent = pwd.getpwuid(get_zulip_uid())
+    pwent = get_zulip_pwent()
     os.setgid(pwent.pw_gid)
     if save_suid:
         os.setresuid(pwent.pw_uid, pwent.pw_uid, os.getuid())
@@ -148,10 +155,10 @@ def get_dev_uuid_var_path(create_if_missing=False):
     else:
         if create_if_missing:
             zulip_uuid = str(uuid.uuid4())
-            # We need sudo here, since the path will be under /srv/ in the
+            # We need root access here, since the path will be under /srv/ in the
             # development environment.
-            subprocess.check_call(["sudo", "/bin/bash", "-c",
-                                   "echo %s > %s" % (zulip_uuid, uuid_path)])
+            run_as_root(["sh", "-c", 'echo "$1" > "$2"', "-",
+                         zulip_uuid, uuid_path])
         else:
             raise AssertionError("Missing UUID file; please run tools/provision!")
 
@@ -332,7 +339,7 @@ def may_be_perform_purging(dirs_to_purge, dirs_to_keep, dir_type, dry_run, verbo
         if verbose:
             print("Cleaning unused %s: %s" % (dir_type, directory))
         if not dry_run:
-            subprocess.check_call(["sudo", "rm", "-rf", directory])
+            run_as_root(["rm", "-rf", directory])
 
     for directory in dirs_to_keep:
         if verbose:
@@ -419,10 +426,17 @@ def is_root() -> bool:
         return True
     return False
 
+def run_as_root(args, **kwargs):
+    # type: (List[str], **Any) -> None
+    sudo_args = kwargs.pop('sudo_args', [])
+    if not is_root():
+        args = ['sudo'] + sudo_args + ['--'] + args
+    run(args, **kwargs)
+
 def assert_not_running_as_root() -> None:
     script_name = os.path.abspath(sys.argv[0])
     if is_root():
-        pwent = pwd.getpwuid(get_zulip_uid())
+        pwent = get_zulip_pwent()
         msg = ("{shortname} should not be run as root. Use `su {user}` to switch to the 'zulip'\n"
                "user before rerunning this, or use \n  su {user} -c '{name} ...'\n"
                "to switch users and run this as a single command.").format(
