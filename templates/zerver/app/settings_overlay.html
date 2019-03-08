@@ -23,7 +23,7 @@
                     <i class="icon fa fa-exclamation-triangle" aria-hidden="true"></i>
                     <div class="text">{{ _('Notifications') }}</div>
                 </li>
-                {% if not is_guest %}
+                {% if is_admin %}
                 <li tabindex="0" data-section="your-bots">
                     <i class="icon fa fa-github" aria-hidden="true"></i>
                     <div class="text">{{ _('Your bots') }}</div>
@@ -42,7 +42,7 @@
                     <div class="text">{{ _('Muted topics') }}</div>
                 </li>
             </ul>
-
+            {% if is_admin %}
             <ul class="org-settings-list">
                 <li tabindex="0" data-section="organization-profile">
                     <i class="icon fa fa-address-card" aria-hidden="true"></i>
@@ -139,6 +139,7 @@
                 </li>
                 {% endif %}
             </ul>
+            {% endif %}
         </div>
     </div>
     <div class="content-wrapper right">

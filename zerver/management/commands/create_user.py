@@ -43,7 +43,7 @@ Omit both <email> and <full name> for interactive user creation.
                             help='The file containing the password of the new user.')
         parser.add_argument('email', metavar='<email>', type=str, nargs='?', default=argparse.SUPPRESS,
                             help='email address of new user')
-        parser.add_argument('full_name', metavar='<full name>', type=str, nargs='?',
+        parser.add_argument('full_name', metavar='<full_name>', type=str, nargs='?',
                             default=argparse.SUPPRESS,
                             help='full name of new user')
         self.add_realm_args(parser, True, "The name of the existing realm to which to add the user.")
@@ -79,7 +79,7 @@ parameters, or specify no parameters for interactive user creation.""")
         try:
             if 'password' in options:
                 pw = options['password']
-            if 'password_file' in options:
+            elif 'password_file' in options:
                 pw = open(options['password_file'], 'r').read()
             else:
                 user_initial_password = initial_password(email)
